@@ -1,0 +1,266 @@
+with OS as (
+select
+ doo.id_os            as id_os
+,ado.id_deal          as id_deal
+,doo.id_account_amort as id_account_amort
+,doo.id_account_os    as id_account_os
+,doo.name_os          as name_os
+,doo.dt_buy           as dt_buy
+,doo.id_department    as id_department
+,doo.code_os          as code_os
+from 1 doo
+join 2 ado on ado.id_os = doo.id_os
+where 1=1
+and to_date (:p_dt) between doo.dt_open and doo.dt_close
+and (doo.dt_offs > to_date (:p_dt) OR doo.dt_offs is null)
+and to_date (:p_dt) between ado.dt_open and ado.dt_close
+)
+
+,amort_OS as (
+select
+ s.id_deal         as id_deal
+,s.id_os           as id_os
+,da.id_account     as id_account
+,da.iban           as iban
+,sum (fdr.val_rst_cur_out) as ost
+from OS s
+join 3 da on da.id_account = s.id_account_amort
+left join 4 fdr on fdr.id_deal = s.id_deal and fdr.id_account = s.id_account_amort
+                               and to_date (:p_dt) = fdr.dt_open                              
+
+where 1=1
+group by s.id_deal, s.id_os, da.id_account, da.iban
+)
+
+,type_risk_OS as (
+select
+ s.id_os as id_os
+,s.id_deal as id_deal
+,dr.code_riskcat as code_riskcat
+,fd.dt_open as dt_open
+from OS s
+join 5 fd on s.id_deal = fd.id_deal
+join 6 dr on fd.id_riskcat = dr.id_riskcat
+join 7 dt on dt.id_typerisk = fd.id_typerisk
+
+where dr.id_typerisk = (select t.id_typerisk from 8 t where t.code_typerisk = 'SCO#TP')
+and to_date (:p_dt) between fd.dt_open and fd.dt_close
+)
+-------------------------------------
+,iban_event_OC as (
+select
+ doo.id_os as id_os
+ ,doo.id_deal as id_deal
+ ,CASE
+   WHEN doo.id_account_os=dac.id_account 
+     THEN dad.id_account   
+       ELSE daa.id_account    
+         END as id_account 
+from OS doo
+join 9 t on t.id_os = doo.id_os
+JOIN 10 f ON t.id_oper=f.id_tmcopkind
+JOIN 11 o ON o.id_event=t.id_event
+JOIN 12 fc ON fc.id_carry = o.id_carry
+
+JOIN 13 dad ON dad.id_account=fc.id_account_debet
+JOIN 13 dac ON dac.id_account=fc.id_account_credit
+join 13 daa on daa.id_account=doo.id_account_os
+
+where 1=1
+and t.dt_open < to_date (:p_dt)
+and f.code_tmcopkind = '3#16' 
+order by t.dt_open desc
+)
+
+,amort_event_OS as (
+select 
+ d.id_os as id_os
+,d.iban_amort_OS as iban_amort_OS
+,sum (d.value) as ost
+from (select
+         doo.id_os as id_os
+         ,CASE
+           WHEN doo.id_account_amort=dac.id_account 
+             THEN daa.iban   
+               ELSE dac.iban
+                 END as iban_amort_OS
+        ,fc.value
+        from OS doo
+        join type_risk_OS tro on tro.id_os = doo.id_os and tro.id_deal = doo.id_deal
+        join 14 t on t.id_os = doo.id_os
+        JOIN 15 f ON t.id_oper=f.id_tmcopkind
+        JOIN 16 o ON o.id_event=t.id_event
+        JOIN 17 fc ON fc.id_carry = o.id_carry
+
+        JOIN 13 dad ON dad.id_account=fc.id_account_debet
+        JOIN 13 dac ON dac.id_account=fc.id_account_credit
+        join 13 daa on daa.id_account=doo.id_account_amort
+
+        where 1=1
+        and t.dt_open < to_date (:p_dt)
+        and f.code_tmcopkind = '4#19' 
+       
+        order by t.dt_open desc) d
+group by d.id_os, d.iban_amort_OS)
+----------------------------------------
+,TMC_ as (
+select
+ dtc.id_tmccard             as id_tmccard
+,dtc.id_tmcnom              as id_tmcnom
+,dtc.invnum                 as invnum
+,substr (dtc.invnum, 13, 1) as code_os_tmc
+,substr (dtc.invnum, 15)    as INN
+,dtn.name_tmcnom            as name_tmcnom
+,dtc.datebuy                as datebuy
+from 18 dtc
+join 19 dtn on dtn.id_tmcnom = dtc.id_tmcnom
+where 1=1
+and to_date (:p_dt) between dtc.dt_open and dtc.dt_close
+and to_date (:p_dt) between dtn.dt_open and dtn.dt_close
+and dtc.pricebeg != 0
+)
+
+,type_risk_TMC as (
+select
+ t.id_tmccard as id_tmccard
+,adtc.id_deal as id_deal
+,dr.id_riskcat as id_riskcat
+,dr.code_riskcat as code_riskcat
+,fd.dt_open as dt_open
+,da.iban as iban
+from 20 dr
+join 21 fd on fd.id_riskcat = dr.id_riskcat
+join 22 dt on dt.id_typerisk = fd.id_typerisk
+join 23 adtc on adtc.id_deal = fd.id_deal
+join TMC_ t on t.id_tmccard = adtc.id_tmccard
+join 24 aad on aad.id_deal = adtc.id_deal
+join 13t da on da.id_account = aad.id_account
+
+where 1=1
+and dr.id_typerisk = (select t.id_typerisk from 32 t where t.code_typerisk = 'SCO#TP')
+)
+
+,TMC_movement as (
+select
+ fr.id_tmccard
+,fr.id_riskcat
+,fr.id_deal
+,fr.id_department
+,MAX (fr.dt_open) as max_dt
+from TMC_ t
+join 25 fr ON fr.id_tmccard = t.id_tmccard
+join 26 dtk ON dtk.id_tmcopkind = fr.id_tmcopkind
+
+where 1=1
+and to_date (:p_dt) >= fr.dt_open
+and dtk.code_tmcopkind in ('22#196', '3#122', '3#120') 
+and fr.quant_risk > 0.000
+group by fr.id_tmccard, fr.id_riskcat, fr.id_deal, fr.id_department
+)
+
+,TMC_movement_clear as (
+  select           
+  t.id_tmccard
+  ,t.id_riskcat
+  ,t.id_deal
+  ,t.id_department
+  ,t.max_dt
+   from TMC_movement t
+  where
+  not exists (
+    select 1 from 34 fri
+    join 27 dtk ON dtk.id_tmcopkind = fri.id_tmcopkind
+    where t.id_tmccard = fri.id_tmccard
+    and dtk.code_tmcopkind in ('22#197', '22#44') 
+    and fri.dt_open>t.max_dt
+    and fri.dt_open<= to_date (:p_dt)
+    and fri.rest_risk=0     
+  )
+)
+-------------------------------------------------------
+-------------------------------------------------------
+select
+ s.id_os                             as idd  
+,s.id_deal                           as id_deal
+,dd.code_department                  as code_department  
+,substr(s.code_os, 5, 1)             as code_os_tmc  
+,substr (s.code_os, 7)               as INN  
+,s.name_os                           as name_os_tmc  
+,tr.dt_open                          as dt_open  
+,s.dt_buy                            as dt_buy 
+,tr.code_riskcat                     as code_riskcat 
+,da.iban                             as iban 
+,abs (fdr.val_rst_cur_out)           as bal_cost 
+,nvl (a.ost, 0.00)                   as amort 
+,a.iban                              as iban_amort 
+,(abs (fdr.val_rst_cur_out) - (nvl (a.ost, 0.00))) as ost_cost 
+from OS s
+join amort_OS a on a.id_os = s.id_os and s.id_deal = a.id_deal
+join type_risk_OS tr on tr.id_os = s.id_os and s.id_deal = tr.id_deal
+join 13 da on da.id_account = s.id_account_os
+join 28 fdr on fdr.id_deal = s.id_deal and fdr.id_acc_role in ('127', '371') 
+join 29 dd on dd.id_department = s.id_department
+
+where 1=1
+and to_date (:p_dt) = fdr.dt_open
+and s.id_os not in (select r.id_os from iban_event_OC r)
+
+UNION ALL
+
+select
+ s.id_os                             as idd  
+,s.id_deal                           as id_deal
+,dd.code_department                  as code_department  
+,substr(s.code_os, 5, 1)             as code_os_tmc  
+,substr (s.code_os, 7)               as INN  
+,s.name_os                           as name_os_tmc  
+,tr.dt_open                          as dt_open  
+,s.dt_buy                            as dt_buy 
+,tr.code_riskcat                     as code_riskcat 
+,da.iban                             as iban 
+,abs (fdr.val_rst_cur_out)           as bal_cost 
+,nvl (a.ost, 0.00)                   as amort 
+,a.iban_amort_OS                     as iban_amort 
+,(abs (fdr.val_rst_cur_out) - (nvl (a.ost, 0.00))) as ost_cost 
+from OS s
+join amort_event_OS a on a.id_os = s.id_os 
+join type_risk_OS tr on tr.id_os = s.id_os and s.id_deal = tr.id_deal
+join iban_event_OC ivoc on ivoc.id_os = s.id_os and ivoc.id_deal = tr.id_deal
+join 13 da on da.id_account = ivoc.id_account
+join 28 fdr on fdr.id_deal = s.id_deal and fdr.id_acc_role in ('127', '371') 
+                           and fdr.id_account = ivoc.id_account and fdr.val_rst_cur_out != '0.000'
+join 29 dd on dd.id_department = s.id_department
+
+where 1=1
+and to_date (:p_dt) = fdr.dt_open
+
+
+UNION ALL
+
+select
+ t.id_tmcnom                 as idd
+,trt.id_deal                 as id_deal
+,dd.code_department          as code_department  
+,t.code_os_tmc               as code_os_tmc 
+,t.INN                       as INN 
+,t.name_tmcnom               as name_os_tmc 
+,trt.dt_open                 as dt_open 
+,t.datebuy                   as dt_buy /
+,trt.code_riskcat            as code_riskcat 
+,trt.iban                    as iban 
+,abs (fdr.val_rst_cur_out)   as bal_cost 
+,null                        as amort 
+,null                        as iban_amort 
+,abs (fdr.val_rst_cur_out)   as ost_cost 
+from TMC_ t  
+join 30 adtc on adtc.id_tmccard = t.id_tmccard
+join TMC_movement_clear tm on tm.id_tmccard = t.id_tmccard and tm.id_deal = adtc.id_deal
+join type_risk_TMC trt on trt.id_tmccard = t.id_tmccard and tm.id_riskcat = trt.id_riskcat  
+join 28 fdr on /*fdr.id_account = da.id_account and*/ fdr.id_deal = tm.id_deal and fdr.val_rst_cur_out != '0.000'
+join 29 dd on dd.id_department = tm.id_department
+
+where 1=1
+and to_date (:p_dt) between adtc.dt_open and adtc.dt_close
+and to_date (:p_dt) = fdr.dt_open
+
+----------------------------------
